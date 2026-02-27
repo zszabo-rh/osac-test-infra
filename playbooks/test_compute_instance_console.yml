@@ -1,0 +1,91 @@
+---
+# OSAC E2E Test: ComputeInstance Serial Console Access
+#
+# This playbook tests serial console access to a running ComputeInstance.
+# It requires an existing ComputeInstance in Running state.
+#
+# Usage:
+#   # Test against an existing running ComputeInstance:
+#   ansible-playbook playbooks/test_compute_instance_console.yml \
+#     -e compute_instance_id=<uuid> \
+#     -e test_namespace=<namespace>
+#
+#   # Create a new ComputeInstance, test console, then clean up:
+#   ansible-playbook playbooks/test_compute_instance_console.yml \
+#     -e create_compute_instance=true \
+#     -e test_namespace=<namespace>
+
+- name: OSAC ComputeInstance Console Test
+  hosts: localhost
+  gather_facts: true
+  vars:
+    test_name: ComputeInstance Console Test
+    test_description: Test serial console access to a running ComputeInstance
+    create_compute_instance: false
+    console_test_timeout: 10
+    cli_binary: "{{ fulfillment_cli_path }}"
+    template: osac.templates.ocp_virt_vm
+  tasks:
+    - name: Display test information
+      ansible.builtin.debug:
+        msg: |
+          {{ test_name }}
+          ==========================================
+          Description: {{ test_description }}
+          Namespace: {{ test_namespace }}
+          ComputeInstance ID: {{ compute_instance_id | default('(will create)') }}
+          Timestamp: {{ ansible_date_time.iso8601 }}
+          ==========================================
+      tags:
+        - info
+
+    - name: Setup test prerequisites
+      ansible.builtin.include_role:
+        name: fulfillment_cli_base
+      tags:
+        - always
+
+    - name: Execute console test
+      block:
+        - name: Create ComputeInstance for testing
+          when: create_compute_instance | bool
+          tags:
+            - setup
+          block:
+            - name: Create ComputeInstance
+              ansible.builtin.include_role:
+                name: test_compute_instance_creation
+              vars:
+                compute_instance_template: "{{ template }}"
+
+            - name: Set compute_instance_id from created instance
+              ansible.builtin.set_fact:
+                compute_instance_id: "{{ compute_instance_order_uuid }}"
+
+        - name: Run console access tests
+          ansible.builtin.include_role:
+            name: test_compute_instance_console
+          tags:
+            - test
+
+      rescue:
+        - name: Log test failure
+          ansible.builtin.lineinfile:
+            path: "{{ testing_workspace }}/test-execution.log"
+            line: "[{{ ansible_date_time.iso8601 }}] FAILED: Console test failed for {{ compute_instance_id | default('unknown') }}"
+            create: true
+            mode: "0644"
+
+        - name: Re-raise the error
+          ansible.builtin.fail:
+            msg: Console test failed
+
+      always:
+        - name: Clean up created ComputeInstance
+          when: create_compute_instance | bool and compute_instance_order_uuid is defined
+          ansible.builtin.command:
+            cmd: "{{ fulfillment_cli_path }} delete computeinstance {{ compute_instance_order_uuid }}"
+          changed_when: true
+          failed_when: false
+          tags:
+            - cleanup

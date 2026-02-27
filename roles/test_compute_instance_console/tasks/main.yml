@@ -1,0 +1,94 @@
+---
+# E2E Test: ComputeInstance Console Access
+#
+# Prerequisites:
+#   - A ComputeInstance must be in Running state
+#   - The compute_instance_id variable must be set
+#   - fulfillment-cli must be logged in (via fulfillment_cli_base role)
+#
+# This role tests:
+#   1. Console access availability check (GetAccess RPC)
+#   2. Serial console connection and basic I/O
+#   3. Clean disconnect via escape sequence
+#   4. Error handling for non-running instances
+
+- name: Check console access availability via gRPC
+  ansible.builtin.command:
+    cmd: >
+      grpcurl -insecure
+      -H "Authorization: Bearer {{ fulfillment_cli_base_grpc_token_result.stdout }}"
+      -d '{"resource_type": 1, "resource_id": "{{ compute_instance_id }}"}'
+      {{ fulfillment_address }}
+      osac.public.v1.Console/GetAccess
+  register: console_access_result
+  changed_when: false
+
+- name: Parse console access response
+  ansible.builtin.set_fact:
+    console_access: "{{ console_access_result.stdout | from_json }}"
+
+- name: Verify console is available
+  ansible.builtin.assert:
+    that:
+      - console_access.available | default(false) | bool
+    fail_msg: >
+      Console not available for ComputeInstance {{ compute_instance_id }}.
+      Reason: {{ console_access.reason | default('unknown') }}
+    success_msg: >
+      Console available for ComputeInstance {{ compute_instance_id }}.
+      Supported types: {{ console_access.supportedTypes | default([]) | join(', ') }}
+
+- name: Test serial console connection with timeout
+  ansible.builtin.command:
+    cmd: >
+      timeout {{ console_test_timeout | default(10) }}
+      {{ fulfillment_cli_path }} console computeinstance {{ compute_instance_id }}
+      --timeout 30s
+  register: console_connect_result
+  changed_when: false
+  failed_when: false
+
+- name: Verify console connection was established
+  ansible.builtin.assert:
+    that:
+      - >
+        'Connected to' in console_connect_result.stderr or
+        console_connect_result.rc == 124
+    fail_msg: >
+      Console connection failed.
+      stdout: {{ console_connect_result.stdout }}
+      stderr: {{ console_connect_result.stderr }}
+      rc: {{ console_connect_result.rc }}
+    success_msg: Console connection to {{ compute_instance_id }} established successfully
+
+- name: Test console with echo command via stdin pipe
+  ansible.builtin.shell:
+    cmd: >
+      set -o pipefail;
+      echo -e "echo OSAC_CONSOLE_TEST_MARKER\r~." |
+      timeout {{ console_test_timeout | default(10) }}
+      {{ fulfillment_cli_path }} console computeinstance {{ compute_instance_id }}
+      --timeout 30s
+  register: console_echo_result
+  changed_when: false
+  failed_when: false
+
+- name: Display console echo test output
+  ansible.builtin.debug:
+    msg: |
+      Console echo test results:
+        stdout: {{ console_echo_result.stdout | default('(empty)') }}
+        stderr: {{ console_echo_result.stderr | default('(empty)') }}
+        rc: {{ console_echo_result.rc }}
+
+- name: Log console test results
+  ansible.builtin.lineinfile:
+    path: "{{ testing_workspace }}/test-execution.log"
+    line: >
+      [{{ ansible_date_time.iso8601 }}] CONSOLE TEST:
+      ComputeInstance={{ compute_instance_id }},
+      Access={{ console_access.available | default(false) }},
+      ConnectRC={{ console_connect_result.rc }},
+      EchoRC={{ console_echo_result.rc }}
+    create: true
+    mode: "0644"

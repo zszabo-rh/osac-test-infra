@@ -1,0 +1,31 @@
+---
+# E2E Test: Console access denied for non-running ComputeInstance
+#
+# Prerequisites:
+#   - A ComputeInstance that is NOT in Running state (e.g., Starting or Failed)
+#   - The compute_instance_id_not_running variable must be set
+
+- name: Check console access for non-running instance
+  ansible.builtin.command:
+    cmd: >
+      grpcurl -insecure
+      -H "Authorization: Bearer {{ fulfillment_cli_base_grpc_token_result.stdout }}"
+      -d '{"resource_type": 1, "resource_id": "{{ compute_instance_id_not_running }}"}'
+      {{ fulfillment_address }}
+      fulfillment.v1.Console/GetAccess
+  register: console_not_running_result
+  changed_when: false
+
+- name: Parse response
+  ansible.builtin.set_fact:
+    console_not_running: "{{ console_not_running_result.stdout | from_json }}"
+
+- name: Verify console is NOT available for non-running instance
+  ansible.builtin.assert:
+    that:
+      - not (console_not_running.available | default(false) | bool)
+    fail_msg: >
+      Console should NOT be available for non-running instance {{ compute_instance_id_not_running }}
+    success_msg: >
+      Correctly denied console access for non-running instance.
+      Reason: {{ console_not_running.reason | default('') }}
