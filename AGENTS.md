@@ -288,16 +288,31 @@ pre-commit run --all-files  # yamllint, ansible-lint, standard hooks
 
 ### E2E Test Runs
 
-**Workflow**: `.github/workflows/e2e-vmaas.yml`
-- Reusable workflow with cluster-tool snapshot restoration
-- Runs on PR approval or periodic schedule
-- Outputs JUnit XML to `reports/` directory
+Each E2E flavor is split into a reusable `workflow_call` file plus a separate "caller" file that
+owns the triggers — GitHub Actions triggers are per-file, so this keeps unrelated trigger types
+(schedule, `workflow_dispatch`, slash-command) out of the reusable workflow's own history:
+
+- `.github/workflows/e2e-vmaas.yml` — reusable (`workflow_call`), cluster-tool snapshot restoration
+  - `.github/workflows/e2e-vmaas-caller.yml` — `workflow_dispatch` entry point, calls `e2e-vmaas.yml`
+- `.github/workflows/e2e-vmaas-full-install.yml` — reusable (`workflow_call`), full install from scratch (no snapshot)
+  - `.github/workflows/e2e-vmaas-full-install-caller.yml` — triggers on PR to `main`, a 12-hour
+    schedule (`0 */12 * * *`), and `workflow_dispatch`; calls `e2e-vmaas-full-install.yml`
+
+Both flavors accept `test-suite`/`test-filter` inputs and output JUnit XML to `reports/`.
 
 **Fork PR workflow**:
 - `.github/workflows/slash-command.yml` — Listens for `/test`, `/retest`, `/cancel`, and `/ok-to-test` PR comments
 - `.github/workflows/slash-command-handler.yml` — Triggers E2E workflow after slash command approval
 - `.github/workflows/ok-to-test-label-cleanup.yml` — Removes the `ok-to-test` label whenever new commits are pushed, requiring an org member to re-approve
 - Tests run in container with Vault secrets injection
+
+### Monitoring Workflows
+
+Unrelated to the pytest E2E suites — these validate/deploy the `monitoring/` stack, split into two
+files for the same per-file-trigger reason as the E2E workflows above (so the deploy job never
+shows up, even as "skipped", on a PR that only touches monitoring config):
+- `.github/workflows/validate-monitoring.yml` — runs on PRs touching `monitoring/**`; config/rules/dashboard sanity checks, no secrets needed
+- `.github/workflows/deploy-monitoring.yml` — runs on push to `main` (or manual dispatch) on the dedicated `monitoring-central` self-hosted runner; refreshes the live stack and fans out to registered remote runners
 
 ## Code Style
 
